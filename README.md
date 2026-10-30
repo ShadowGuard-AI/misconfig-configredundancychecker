@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # misconfig-ConfigRedundancyChecker
 Detects redundant or conflicting configuration settings. Identifies parameters that have no effect because of the presence of other parameters or are set multiple times with different values. - Focused on Check for misconfigurations in configuration files or infrastructure definitions
 

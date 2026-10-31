@@ -56,6 +56,40 @@ class ConfigRedundancyChecker:
             logging.error(f"An unexpected error occurred while loading the file: {e}")
             raise
 
+    def find_raw_duplicate_keys(self) -> List[str]:
+        """Detect true duplicate keys from the raw document tree.
+
+        yaml.safe_load collapses a repeated key before any check can see it,
+        so this walks the composed node tree instead, where both pairs of a
+        repeated key in one mapping are still present.
+        """
+        findings: List[str] = []
+        try:
+            with open(self.file_path, "r") as f:
+                node = yaml.compose(f)
+        except Exception:
+            return findings
+        def walk(node, path=""):
+            if isinstance(node, yaml.MappingNode):
+                seen = {}
+                for key_node, value_node in node.value:
+                    key = getattr(key_node, "value", str(key_node))
+                    full_path = f"{path}.{key}" if path else str(key)
+                    if key in seen:
+                        note = f"Duplicate key found: {full_path}"
+                        if getattr(value_node, "value", None) != getattr(seen[key], "value", None):
+                            note += " (set multiple times with different values)"
+                        findings.append(note)
+                    else:
+                        seen[key] = value_node
+                    walk(value_node, full_path)
+            elif isinstance(node, yaml.SequenceNode):
+                for i, item in enumerate(node.value):
+                    walk(item, f"{path}[{i}]")
+        if node is not None:
+            walk(node)
+        return findings
+
     def check_redundancy(self) -> List[str]:
         """
         Checks for redundant or conflicting configuration settings.
@@ -64,26 +98,23 @@ class ConfigRedundancyChecker:
             List[str]: A list of strings describing any detected redundancies or conflicts.
         """
 
-        if not self.config_data:
-            logging.warning("No configuration data loaded. Call load_config() first.")
-            return []
+        if not isinstance(self.config_data, dict) or not self.config_data:
+            raise ValueError("No configuration data to check: the file is empty or does not contain a mapping of settings.")
 
         redundancies: List[str] = []
+        redundancies.extend(self.find_raw_duplicate_keys())
 
-        # Placeholder for more advanced checks.  This is where the core logic would reside.
-        # Example:
-        # if "option_a" in self.config_data and "option_b" in self.config_data:
-        #     if self.config_data["option_a"] == True and self.config_data["option_b"] == False:
-        #         redundancies.append("option_b is redundant as option_a overrides it.")
-
-        # Example checking for duplicate keys (not a reliable way in general JSON/YAML but illustrative)
-        seen_keys = set()
+        # Seen keys are scoped to the single mapping that holds them, so the
+        # same key name in two different sections is not a duplicate.
         def check_duplicate_keys(data, path=""):
             if isinstance(data, dict):
+                seen_keys = set()
                 for key, value in data.items():
                     full_path = f"{path}.{key}" if path else key
                     if key in seen_keys:
-                        redundancies.append(f"Duplicate key found: {full_path}")
+                        msg = f"Duplicate key found: {full_path}"
+                        if msg not in redundancies:
+                            redundancies.append(msg)
                     else:
                         seen_keys.add(key)
                     check_duplicate_keys(value, full_path)
@@ -91,8 +122,6 @@ class ConfigRedundancyChecker:
                 for i, item in enumerate(data):
                     check_duplicate_keys(item, f"{path}[{i}]")
 
-        #reset seen keys so that each check only sees keys related to the section being inspected
-        seen_keys = set()
         check_duplicate_keys(self.config_data)
 
         if not redundancies:
@@ -162,6 +191,7 @@ def main() -> int:
 
     except ValueError as e:
         logging.error(f"Configuration error: {e}")
+        print(f"Error: {e}")
         return 1
     except FileNotFoundError as e:
         logging.error(f"File not found: {e}")

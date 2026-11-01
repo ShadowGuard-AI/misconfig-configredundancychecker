@@ -37,6 +37,10 @@ class ConfigRedundancyChecker:
         try:
             with open(self.file_path, "r") as f:
                 try:
+                    # YAML goes first and almost always wins, because YAML accepts
+                    # JSON documents. A .json file is therefore loaded and labelled
+                    # yaml below, and the JSON branch with its seek back to the
+                    # start only runs for the rare file YAML actually rejects.
                     self.config_data = yaml.safe_load(f)
                     self.file_type = "yaml"
                     logging.info(f"Successfully loaded YAML configuration from {self.file_path}")
@@ -66,6 +70,12 @@ class ConfigRedundancyChecker:
         findings: List[str] = []
         try:
             with open(self.file_path, "r") as f:
+                # compose reads a single document. In a multi document YAML
+                # file everything after the first document is invisible to
+                # this walk, while safe_load in load_config refuses such a
+                # file outright, so the two halves of my check disagree
+                # about what the file even is. Any compose error is also
+                # swallowed into the empty findings return below.
                 node = yaml.compose(f)
         except Exception:
             return findings
@@ -73,11 +83,19 @@ class ConfigRedundancyChecker:
             if isinstance(node, yaml.MappingNode):
                 seen = {}
                 for key_node, value_node in node.value:
+                    # The key here is the text as written, before YAML typing. An
+                    # integer key 1 and a quoted key '1' arrive with the same text
+                    # and get reported as duplicates of each other, although the
+                    # parsed config holds them as two different keys.
                     key = getattr(key_node, "value", str(key_node))
                     full_path = f"{path}.{key}" if path else str(key)
                     if key in seen:
                         note = f"Duplicate key found: {full_path}"
                         if getattr(value_node, "value", None) != getattr(seen[key], "value", None):
+                            # That comparison reads the node value attribute, which for a
+                            # mapping or a list value is a list of child nodes rather than
+                            # text. Two identical nested blocks therefore tend to compare
+                            # unequal here and earn the different values wording anyway.
                             note += " (set multiple times with different values)"
                         findings.append(note)
                     else:
@@ -106,6 +124,11 @@ class ConfigRedundancyChecker:
 
         # Seen keys are scoped to the single mapping that holds them, so the
         # same key name in two different sections is not a duplicate.
+        # This walk over the parsed data can never find a duplicate:
+        # a Python dict has already collapsed repeated keys before
+        # the data reaches me. It stays as a guard for data built by
+        # hand and passed in directly, but the raw node walk above is
+        # the check that does the work on real files.
         def check_duplicate_keys(data, path=""):
             if isinstance(data, dict):
                 seen_keys = set()
